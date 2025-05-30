@@ -5,6 +5,12 @@
 #include "xdp_stats_kern_user.h"
 #include "xdp_stats_kern.h"
 
+#define ETH_P_IPV6	0x86DD /* Ethernet type for IPv6 */
+#define IPPROTO_ICMPV6	58 /* IPv6 protocol number for ICMPv6 */
+#define ICMPV6_ECHO_REQUEST	128 /* ICMPv6 type for Echo Request */
+
+#define icmp6_sequence	icmp6_dataun.u_echo.sequence
+
 /* Header cursor to keep track of current parsing position */
 struct hdr_cursor {
 	void *pos;
@@ -38,19 +44,34 @@ static __always_inline int parse_ethhdr(struct hdr_cursor *nh,
 	return eth->h_proto; /* network-byte-order */
 }
 
-/* Assignment 2: Implement and use this */
-/*static __always_inline int parse_ip6hdr(struct hdr_cursor *nh,
+static __always_inline int parse_ip6hdr(struct hdr_cursor *nh,
 					void *data_end,
 					struct ipv6hdr **ip6hdr)
 {
-}*/
+	struct ipv6hdr *ip6 = nh->pos;
 
-/* Assignment 3: Implement and use this */
-/*static __always_inline int parse_icmp6hdr(struct hdr_cursor *nh,
+	if (ip6 + 1 > data_end)
+		return -1;
+
+	nh->pos = ip6 + 1;
+	*ip6hdr = ip6;
+
+	return ip6->nexthdr;
+}
+
+static __always_inline int parse_icmp6hdr(struct hdr_cursor *nh,
 					  void *data_end,
 					  struct icmp6hdr **icmp6hdr)
 {
-}*/
+	struct icmp6hdr *icmp6 = nh->pos;
+	if (icmp6 + 1 > data_end)
+		return -1;
+
+	nh->pos = icmp6 + 1;
+	*icmp6hdr = icmp6;
+
+	return icmp6->icmp6_type;
+}
 
 SEC("xdp")
 int  xdp_parser_func(struct xdp_md *ctx)
@@ -77,10 +98,23 @@ int  xdp_parser_func(struct xdp_md *ctx)
 	 * header type in the packet correct?), and bounds checking.
 	 */
 	nh_type = parse_ethhdr(&nh, data_end, &eth);
-	if (nh_type != bpf_htons(0x86DD))
+	if (nh_type != bpf_htons(ETH_P_IPV6))
 		goto out;
 
-	/* Assignment additions go below here */
+	struct ipv6hdr *ip6;
+	int ip_type;
+	ip_type = parse_ip6hdr(&nh, data_end, &ip6);
+	if (ip_type != IPPROTO_ICMPV6)
+		goto out;
+
+	struct icmp6hdr *icmp6;
+	int icmp_type;
+	icmp_type = parse_icmp6hdr(&nh, data_end, &icmp6);
+	if (icmp_type != ICMPV6_ECHO_REQUEST)
+		goto out;
+
+	if (bpf_ntohs(icmp6->icmp6_sequence) % 2)
+		goto out;
 
 	action = XDP_DROP;
 out:
