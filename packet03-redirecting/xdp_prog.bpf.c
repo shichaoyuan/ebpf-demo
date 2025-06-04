@@ -36,20 +36,52 @@ static __always_inline void swap_src_dst_mac(struct ethhdr *eth)
 {
 	/* Assignment 1: swap source and destination addresses in the eth.
 	 * For simplicity you can use the memcpy macro defined above */
+	__u8 h_tmp[ETH_ALEN];
+
+	__builtin_memcpy(h_tmp, eth->h_source, ETH_ALEN);
+	__builtin_memcpy(eth->h_source, eth->h_dest, ETH_ALEN);
+	__builtin_memcpy(eth->h_dest, h_tmp, ETH_ALEN);
 }
 
 static __always_inline void swap_src_dst_ipv6(struct ipv6hdr *ipv6)
 {
 	/* Assignment 1: swap source and destination addresses in the iphv6dr */
+	struct in6_addr tmp = ipv6->saddr;
+
+	ipv6->saddr = ipv6->daddr;
+	ipv6->daddr = tmp;
 }
 
 static __always_inline void swap_src_dst_ipv4(struct iphdr *iphdr)
 {
 	/* Assignment 1: swap source and destination addresses in the iphdr */
+	__be32 tmp = iphdr->saddr;
+
+	iphdr->saddr = iphdr->daddr;
+	iphdr->daddr = tmp;
+}
+
+static __always_inline __u16 csum_fold_helper(__u32 csum)
+{
+	__u32 sum;
+	sum = (csum >> 16) + (csum & 0xffff);
+	sum += (sum >> 16);
+	return ~sum;
+}
+
+static __always_inline __u16 icmp_checksum_diff(
+		__u16 seed,
+		struct icmphdr_common *icmphdr_new,
+		struct icmphdr_common *icmphdr_old)
+{
+	__u32 csum, size = sizeof(struct icmphdr_common);
+
+	csum = bpf_csum_diff((__be32 *)icmphdr_old, size, (__be32 *)icmphdr_new, size, seed);
+	return csum_fold_helper(csum);
 }
 
 /* Implement packet03/assignment-1 in this section */
-SEC("xdp")
+SEC("xdp-icmp-echo")
 int xdp_icmp_echo_func(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -107,6 +139,12 @@ int xdp_icmp_echo_func(struct xdp_md *ctx)
 
 	/* Assignment 1: patch the packet and update the checksum. You can use
 	 * the echo_reply variable defined above to fix the ICMP Type field. */
+	
+	__u16 old_csum = icmphdr->cksum;
+	icmphdr->cksum = 0;
+	struct icmphdr_common icmphdr_old = *icmphdr;
+	icmphdr->type = echo_reply;
+	icmphdr->cksum = icmp_checksum_diff(~old_csum, icmphdr, &icmphdr_old);
 
 	bpf_printk("echo_reply: %d", echo_reply);
 
@@ -271,10 +309,10 @@ out:
 	return xdp_stats_record_action(ctx, action);
 }
 
-SEC("xdp")
+SEC("xdp-pass")
 int xdp_pass_func(struct xdp_md *ctx)
 {
-	return XDP_PASS;
+	return xdp_stats_record_action(ctx, XDP_PASS);
 }
 
 char _license[] SEC("license") = "GPL";
